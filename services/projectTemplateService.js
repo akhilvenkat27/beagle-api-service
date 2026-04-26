@@ -2,7 +2,12 @@ const Project = require('../models/Project');
 const Module = require('../models/Module');
 const Workstream = require('../models/Workstream');
 const Task = require('../models/Task');
-const { getBlueprint } = require('./projectTemplateBlueprints');
+const ProjectTemplate = require('../models/ProjectTemplate');
+const {
+  getBuiltInBlueprint,
+  blueprintFromCustomDoc,
+  isBuiltInId,
+} = require('./projectTemplateBlueprints');
 
 function dueDateFromGoLive(goLive, offsetDays) {
   const d = new Date(goLive);
@@ -13,10 +18,22 @@ function dueDateFromGoLive(goLive, offsetDays) {
 }
 
 /**
+ * Resolve a blueprint from either the built-in catalog or a stored custom template.
+ * Returns null when no template matches the given id.
+ */
+async function resolveBlueprint(templateId) {
+  if (!templateId || typeof templateId !== 'string') return null;
+  const id = templateId.trim();
+  if (isBuiltInId(id)) return getBuiltInBlueprint(id);
+  const doc = await ProjectTemplate.findOne({ templateId: id });
+  return doc ? blueprintFromCustomDoc(doc) : null;
+}
+
+/**
  * Creates a Draft (or requested status) project plus module / workstream / task tree from a blueprint.
  */
 async function instantiateFromBlueprint({ actor, body, templateId }) {
-  const blueprint = getBlueprint(templateId);
+  const blueprint = await resolveBlueprint(templateId);
   if (!blueprint) {
     const err = new Error('UNKNOWN_TEMPLATE');
     err.code = 'UNKNOWN_TEMPLATE';
@@ -88,4 +105,5 @@ async function instantiateFromBlueprint({ actor, body, templateId }) {
 
 module.exports = {
   instantiateFromBlueprint,
+  resolveBlueprint,
 };

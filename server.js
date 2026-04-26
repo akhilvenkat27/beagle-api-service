@@ -69,7 +69,7 @@ app.use((err, req, res, next) => {
 
 // Connect to MongoDB and start server
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/beagle';
+const MONGO_URI = process.env.MONGO_URI;
 
 const { runTier1ReviewScheduler } = require('./services/reviewScheduler');
 const { runTaskDelayEscalation } = require('./services/taskDelayEscalationService');

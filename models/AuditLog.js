@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const ENTITY_TYPES = ['Project', 'Module', 'Workstream', 'Task', 'CR', 'User'];
+const ENTITY_TYPES = ['Project', 'Module', 'Workstream', 'Task', 'CR', 'User', 'ProjectTemplate'];
 
 const auditLogSchema = new mongoose.Schema(
   {

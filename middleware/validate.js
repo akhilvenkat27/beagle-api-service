@@ -108,6 +108,69 @@ const validateProjectTemplateInstantiate = (req, res, next) => {
   next();
 };
 
+/** POST /api/project-templates  +  PUT /api/project-templates/:templateId */
+const validateProjectTemplateUpsert = (req, res, next) => {
+  const b = req.body || {};
+  const errors = [];
+  if (!isNonEmptyString(b.name) || b.name.trim().length < 2) {
+    errors.push('name must be at least 2 characters');
+  }
+  if ('desc' in b && b.desc != null && typeof b.desc !== 'string') {
+    errors.push('desc must be a string');
+  }
+  if ('durationLabel' in b && b.durationLabel != null && typeof b.durationLabel !== 'string') {
+    errors.push('durationLabel must be a string');
+  }
+  if (
+    'defaultDeliveryPhase' in b &&
+    b.defaultDeliveryPhase != null &&
+    b.defaultDeliveryPhase !== '' &&
+    !Project.DELIVERY_PHASES.includes(b.defaultDeliveryPhase)
+  ) {
+    errors.push(`defaultDeliveryPhase must be one of: ${Project.DELIVERY_PHASES.join(', ')}`);
+  }
+  if (!Array.isArray(b.modules) || b.modules.length === 0) {
+    errors.push('modules must be a non-empty array');
+  } else {
+    b.modules.forEach((m, idx) => {
+      if (!m || typeof m !== 'object') {
+        errors.push(`modules[${idx}] must be an object`);
+        return;
+      }
+      if (!isNonEmptyString(m.name) || m.name.trim().length < 2) {
+        errors.push(`modules[${idx}].name must be at least 2 characters`);
+      }
+      if (m.budgetHours == null || m.budgetHours === '' || Number(m.budgetHours) < 0) {
+        errors.push(`modules[${idx}].budgetHours must be a non-negative number`);
+      }
+      if (
+        m.phaseCount != null &&
+        m.phaseCount !== '' &&
+        (Number.isNaN(Number(m.phaseCount)) || Number(m.phaseCount) < 2 || Number(m.phaseCount) > 5)
+      ) {
+        errors.push(`modules[${idx}].phaseCount must be between 2 and 5`);
+      }
+      if ('workstreams' in m && m.workstreams != null) {
+        if (!Array.isArray(m.workstreams)) {
+          errors.push(`modules[${idx}].workstreams must be an array of names`);
+        } else if (
+          m.workstreams.some(
+            (w) =>
+              !(
+                (typeof w === 'string' && w.trim().length > 0) ||
+                (w && typeof w.name === 'string' && w.name.trim().length > 0)
+              )
+          )
+        ) {
+          errors.push(`modules[${idx}].workstreams entries must be non-empty names`);
+        }
+      }
+    });
+  }
+  if (errors.length) return sendErrors(res, errors);
+  next();
+};
+
 /** POST /api/projects/:id/clone */
 const validateProjectClone = (req, res, next) => {
   const b = req.body || {};
@@ -472,6 +535,7 @@ module.exports = {
   validateProjectCreate,
   validateProjectUpdate,
   validateProjectTemplateInstantiate,
+  validateProjectTemplateUpsert,
   validateProjectClone,
   validateModuleCreate,
   validateModuleUpdate,
