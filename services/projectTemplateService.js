@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Project = require('../models/Project');
 const Module = require('../models/Module');
 const Workstream = require('../models/Workstream');
@@ -86,6 +87,10 @@ async function instantiateFromBlueprint({ actor, body, templateId }) {
       });
 
       for (const tDef of wsDef.tasks || []) {
+        const assignedTo =
+          tDef.ownerUserId && mongoose.Types.ObjectId.isValid(String(tDef.ownerUserId))
+            ? new mongoose.Types.ObjectId(String(tDef.ownerUserId))
+            : null;
         await Task.create({
           title: String(tDef.title).trim(),
           owner: String(tDef.owner || 'Project Manager').trim(),
@@ -93,8 +98,8 @@ async function instantiateFromBlueprint({ actor, body, templateId }) {
           dueDate: dueDateFromGoLive(goLiveDate, tDef.dueOffsetFromGoLive ?? -30),
           loggedHours: 0,
           workstreamId: ws._id,
-          assignedTo: null,
-          billable: true,
+          assignedTo,
+          billable: typeof tDef.billable === 'boolean' ? tDef.billable : true,
         });
       }
     }

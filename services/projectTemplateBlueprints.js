@@ -48,44 +48,90 @@ function moduleFromName(name, budgetHours, phaseCount = 3) {
 }
 
 /**
- * Build a module blueprint from explicit workstream names.
- * Budget is split evenly across the provided workstreams; each gets 2 starter tasks.
+ * Build a module blueprint from explicit workstream specs.
+ *
+ * Each entry may be either a string (just the workstream name) or an object
+ * with { name, budgetHours?, ownerPlaceholder?, billable?, startOffsetDays?,
+ * durationDays? } as produced by the template editor. When budgetHours is not
+ * provided per workstream, the module's total budget is split evenly. Due
+ * offsets default to a -90→-10 spread relative to go-live, but explicit
+ * startOffsetDays + durationDays will be used when present.
  */
-function moduleFromExplicit(name, budgetHours, workstreamNames) {
-  const cleaned = (workstreamNames || [])
-    .map((s) => String(s || '').trim())
-    .filter((s) => s.length > 0);
-  if (cleaned.length === 0) return moduleFromName(name, budgetHours, 3);
+function moduleFromExplicit(name, budgetHours, rawWorkstreams) {
+  const items = (rawWorkstreams || [])
+    .map((w) => {
+      if (typeof w === 'string') return { name: w.trim() };
+      if (w && typeof w === 'object' && typeof w.name === 'string') {
+        return { ...w, name: w.name.trim() };
+      }
+      return null;
+    })
+    .filter((w) => w && w.name.length > 0);
+
+  if (items.length === 0) return moduleFromName(name, budgetHours, 3);
 
   const total = Math.max(0, Number(budgetHours) || 0);
-  const perWs = cleaned.length > 0 ? Math.max(24, Math.round(total / cleaned.length)) : 0;
-  const span = Math.max(cleaned.length - 1, 1);
+  const totalExplicit = items.reduce(
+    (sum, w) => sum + (Number.isFinite(Number(w.budgetHours)) ? Number(w.budgetHours) : 0),
+    0
+  );
+  const perWsFallback = items.length > 0 ? Math.max(24, Math.round(total / items.length)) : 0;
+
+  const span = Math.max(items.length - 1, 1);
   const startOffset = -90;
   const endOffset = -10;
   const step = (endOffset - startOffset) / span;
 
-  const workstreams = cleaned.map((wsName, i) => {
-    const due = Math.round(startOffset + step * i);
+  const workstreams = items.map((spec, i) => {
+    const wsName = spec.name;
+    const owner =
+      typeof spec.ownerPlaceholder === 'string' && spec.ownerPlaceholder.trim()
+        ? spec.ownerPlaceholder.trim()
+        : 'Project Manager';
+    const billable = typeof spec.billable === 'boolean' ? spec.billable : true;
+
+    const explicitBudget = Number(spec.budgetHours);
+    const wsBudget =
+      Number.isFinite(explicitBudget) && explicitBudget > 0 ? explicitBudget : perWsFallback;
+
+    const startOff = Number(spec.startOffsetDays);
+    const durDays = Number(spec.durationDays);
+    let due = Math.round(startOffset + step * i);
+    let dueLate = Math.min(due + 6, -1);
+    if (Number.isFinite(startOff) && Number.isFinite(durDays) && durDays >= 0) {
+      due = -Math.max(0, Math.round(90 - startOff));
+      dueLate = -Math.max(0, Math.round(90 - startOff - durDays));
+    }
+
     return {
       name: wsName,
-      budgetHours: perWs,
+      budgetHours: wsBudget,
       costRate: 0,
+      ownerUserId: spec.ownerUserId || null,
       tasks: [
         {
           title: `${wsName}: scope & execution`,
-          owner: 'Project Manager',
+          owner,
+          billable,
+          ownerUserId: spec.ownerUserId || null,
           dueOffsetFromGoLive: due,
         },
         {
           title: `${wsName}: checkpoint / sign-off`,
           owner: 'Delivery Lead',
-          dueOffsetFromGoLive: Math.min(due + 6, -1),
+          billable,
+          ownerUserId: null,
+          dueOffsetFromGoLive: dueLate,
         },
       ],
     };
   });
 
-  return { name, budgetHours: total, workstreams };
+  // If the user assigned per-workstream effort explicitly, prefer that as the
+  // module budget (so totals match what they entered in the editor). Otherwise
+  // fall back to whatever budget was passed in.
+  const moduleBudget = totalExplicit > 0 ? totalExplicit : total;
+  return { name, budgetHours: moduleBudget, workstreams };
 }
 
 const ENTERPRISE_HCM_MODULES = [
@@ -193,11 +239,27 @@ function getBuiltInBlueprint(templateId) {
 function blueprintFromCustomDoc(doc) {
   if (!doc) return null;
   const modules = (doc.modules || []).map((m) => {
-    const wsNames = Array.isArray(m.workstreams)
-      ? m.workstreams.map((w) => (typeof w === 'string' ? w : w?.name)).filter(Boolean)
-      : [];
-    if (wsNames.length > 0) {
-      return moduleFromExplicit(m.name, Number(m.budgetHours) || 240, wsNames);
+    const rawWs = Array.isArray(m.workstreams) ? m.workstreams : [];
+    const richWs = rawWs
+      .map((w) => {
+        if (typeof w === 'string') return { name: w };
+        if (w && typeof w === 'object' && typeof w.name === 'string') {
+          return {
+            name: w.name,
+            budgetHours: w.budgetHours,
+            ownerPlaceholder: w.ownerPlaceholder,
+            ownerUserId: w.ownerUserId ? String(w.ownerUserId) : null,
+            billable: w.billable,
+            startOffsetDays: w.startOffsetDays,
+            durationDays: w.durationDays,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    if (richWs.length > 0) {
+      return moduleFromExplicit(m.name, Number(m.budgetHours) || 240, richWs);
     }
     return moduleFromName(m.name, Number(m.budgetHours) || 240, Number(m.phaseCount) || 3);
   });

@@ -150,19 +150,76 @@ const validateProjectTemplateUpsert = (req, res, next) => {
       ) {
         errors.push(`modules[${idx}].phaseCount must be between 2 and 5`);
       }
+      // Optional editor fields on the module (phase) itself.
+      ['startOffsetDays', 'durationDays'].forEach((k) => {
+        if (m[k] != null && m[k] !== '' && (Number.isNaN(Number(m[k])) || Number(m[k]) < 0)) {
+          errors.push(`modules[${idx}].${k} must be a non-negative number`);
+        }
+      });
+      ['description', 'ownerPlaceholder'].forEach((k) => {
+        if (k in m && m[k] != null && typeof m[k] !== 'string') {
+          errors.push(`modules[${idx}].${k} must be a string`);
+        }
+      });
+      if (
+        'ownerUserId' in m &&
+        m.ownerUserId != null &&
+        m.ownerUserId !== '' &&
+        !/^[a-fA-F0-9]{24}$/.test(String(m.ownerUserId))
+      ) {
+        errors.push(`modules[${idx}].ownerUserId must be a valid user id`);
+      }
+      ['automations', 'keyEvents'].forEach((k) => {
+        if (k in m && m[k] != null) {
+          if (!Array.isArray(m[k]) || m[k].some((s) => typeof s !== 'string')) {
+            errors.push(`modules[${idx}].${k} must be an array of strings`);
+          }
+        }
+      });
       if ('workstreams' in m && m.workstreams != null) {
         if (!Array.isArray(m.workstreams)) {
-          errors.push(`modules[${idx}].workstreams must be an array of names`);
-        } else if (
-          m.workstreams.some(
-            (w) =>
-              !(
-                (typeof w === 'string' && w.trim().length > 0) ||
-                (w && typeof w.name === 'string' && w.name.trim().length > 0)
-              )
-          )
-        ) {
-          errors.push(`modules[${idx}].workstreams entries must be non-empty names`);
+          errors.push(`modules[${idx}].workstreams must be an array`);
+        } else {
+          m.workstreams.forEach((w, wIdx) => {
+            const isString = typeof w === 'string';
+            const isObject = w && typeof w === 'object';
+            const wsName = isString ? w : isObject ? w.name : null;
+            if (!(typeof wsName === 'string' && wsName.trim().length > 0)) {
+              errors.push(`modules[${idx}].workstreams[${wIdx}].name must be a non-empty string`);
+              return;
+            }
+            if (!isObject) return;
+            ['budgetHours', 'startOffsetDays', 'durationDays'].forEach((k) => {
+              if (w[k] != null && w[k] !== '' && (Number.isNaN(Number(w[k])) || Number(w[k]) < 0)) {
+                errors.push(`modules[${idx}].workstreams[${wIdx}].${k} must be a non-negative number`);
+              }
+            });
+            ['description', 'ownerPlaceholder'].forEach((k) => {
+              if (k in w && w[k] != null && typeof w[k] !== 'string') {
+                errors.push(`modules[${idx}].workstreams[${wIdx}].${k} must be a string`);
+              }
+            });
+            if (
+              'ownerUserId' in w &&
+              w.ownerUserId != null &&
+              w.ownerUserId !== '' &&
+              !/^[a-fA-F0-9]{24}$/.test(String(w.ownerUserId))
+            ) {
+              errors.push(
+                `modules[${idx}].workstreams[${wIdx}].ownerUserId must be a valid user id`
+              );
+            }
+            if ('billable' in w && w.billable != null && typeof w.billable !== 'boolean') {
+              errors.push(`modules[${idx}].workstreams[${wIdx}].billable must be a boolean`);
+            }
+            ['automations', 'keyEvents'].forEach((k) => {
+              if (k in w && w[k] != null) {
+                if (!Array.isArray(w[k]) || w[k].some((s) => typeof s !== 'string')) {
+                  errors.push(`modules[${idx}].workstreams[${wIdx}].${k} must be an array of strings`);
+                }
+              }
+            });
+          });
         }
       }
     });
