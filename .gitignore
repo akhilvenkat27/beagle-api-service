@@ -1,2 +1,6 @@
 .env 
 node_modules
+diag.js
+fixData.js
+seed.js
+pacakage-lock.json
