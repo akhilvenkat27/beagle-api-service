@@ -873,6 +873,332 @@ const deleteProject = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/projects/:id/key-events
+ *
+ * Derives a chronological project timeline from existing data — no extra
+ * schema needed:
+ *   - Project lifecycle: created, status changes (status_changed audits),
+ *     baseline lock, go-live (target).
+ *   - Module: completion (status_changed → "Completed").
+ *   - Workstream: planned start/end, actual start/end, sign-off requested,
+ *     sign-off granted.
+ *   - Tier 1 governance: scheduled review sessions.
+ *
+ * Each event has { id, date, kind, severity, title, summary, entityRef }.
+ * `severity` drives icon colour: success | info | caution | risk | neutral.
+ */
+const getProjectKeyEvents = async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    if (!isValidId(projectId)) {
+      return res.status(400).json({ message: 'Invalid project id' });
+    }
+
+    if (!['admin', 'pmo', 'exec'].includes(req.user.role)) {
+      const access = await assertUserCanViewProject(req, projectId);
+      if (!access.ok) {
+        return res.status(access.status).json({ message: access.message });
+      }
+    }
+
+    const project = await Project.findById(projectId);
+    if (!project) return res.status(404).json({ message: 'Project not found' });
+
+    const [modules, baseline, reviews] = await Promise.all([
+      Module.find({ projectId }).lean(),
+      BaselineRecord.findOne({ projectId }).sort({ version: -1 }).lean(),
+      ReviewSession.find({ projectId }).lean(),
+    ]);
+    const moduleIds = modules.map((m) => m._id);
+    const workstreams = await Workstream.find({ moduleId: { $in: moduleIds } })
+      .populate('leadId', 'name')
+      .lean();
+
+    const events = [];
+
+    if (project.createdAt) {
+      events.push({
+        id: `proj-created-${projectId}`,
+        date: project.createdAt,
+        kind: 'project',
+        severity: 'info',
+        title: 'Project created',
+        summary: project.clientName ? `Client: ${project.clientName}` : '',
+        entityRef: { type: 'project', id: String(projectId) },
+      });
+    }
+
+    if (baseline?.lockedAt) {
+      events.push({
+        id: `proj-baseline-${baseline._id}`,
+        date: baseline.lockedAt,
+        kind: 'baseline',
+        severity: 'success',
+        title: `Baseline v${baseline.version} locked`,
+        summary: 'Scope, hours, and dates frozen.',
+        entityRef: { type: 'project', id: String(projectId) },
+      });
+    }
+
+    if (project.goLiveDate) {
+      events.push({
+        id: `proj-golive-${projectId}`,
+        date: project.goLiveDate,
+        kind: 'milestone',
+        severity: project.status === 'Completed' ? 'success' : 'caution',
+        title: 'Target go-live',
+        summary: `${project.deliveryPhase || 'Build & Integration'} · ${project.tier || 'Tier 2'}`,
+        entityRef: { type: 'project', id: String(projectId) },
+      });
+    }
+
+    if (project.status === 'Completed' && project.updatedAt) {
+      events.push({
+        id: `proj-completed-${projectId}`,
+        date: project.updatedAt,
+        kind: 'milestone',
+        severity: 'success',
+        title: 'Project marked completed',
+        summary: '',
+        entityRef: { type: 'project', id: String(projectId) },
+      });
+    }
+
+    modules.forEach((m) => {
+      if (m.status === 'Completed' && m.updatedAt) {
+        events.push({
+          id: `mod-done-${m._id}`,
+          date: m.updatedAt,
+          kind: 'module',
+          severity: 'success',
+          title: `Module completed: ${m.name}`,
+          summary: `${m.budgetHours || 0}h budgeted`,
+          entityRef: { type: 'module', id: String(m._id) },
+        });
+      }
+    });
+
+    workstreams.forEach((ws) => {
+      const moduleName = modules.find((m) => String(m._id) === String(ws.moduleId))?.name;
+      const lead = ws.leadId?.name || '';
+      const baseSummary = [moduleName, lead && `Lead: ${lead}`].filter(Boolean).join(' · ');
+
+      if (ws.baselinePlannedStartDate) {
+        events.push({
+          id: `ws-pstart-${ws._id}`,
+          date: ws.baselinePlannedStartDate,
+          kind: 'workstream',
+          severity: 'info',
+          title: `Planned start: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+      if (ws.actualStartDate) {
+        events.push({
+          id: `ws-astart-${ws._id}`,
+          date: ws.actualStartDate,
+          kind: 'workstream',
+          severity: 'info',
+          title: `Started: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+      if (ws.baselinePlannedEndDate) {
+        const overdue =
+          ws.signOffStatus !== 'Signed Off' && new Date(ws.baselinePlannedEndDate) < new Date();
+        events.push({
+          id: `ws-pend-${ws._id}`,
+          date: ws.baselinePlannedEndDate,
+          kind: 'workstream',
+          severity: overdue ? 'risk' : 'caution',
+          title: `Planned end: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+      if (ws.actualEndDate) {
+        events.push({
+          id: `ws-aend-${ws._id}`,
+          date: ws.actualEndDate,
+          kind: 'workstream',
+          severity: 'success',
+          title: `Completed: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+      if (ws.signOffRequestedAt) {
+        events.push({
+          id: `ws-sreq-${ws._id}`,
+          date: ws.signOffRequestedAt,
+          kind: 'sign-off',
+          severity: 'caution',
+          title: `Sign-off requested: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+      if (ws.signOffCompletedAt) {
+        events.push({
+          id: `ws-sok-${ws._id}`,
+          date: ws.signOffCompletedAt,
+          kind: 'sign-off',
+          severity: 'success',
+          title: `Sign-off granted: ${ws.name}`,
+          summary: baseSummary,
+          entityRef: { type: 'workstream', id: String(ws._id), moduleId: String(ws.moduleId) },
+        });
+      }
+    });
+
+    reviews.forEach((rv) => {
+      if (!rv.scheduledDate) return;
+      events.push({
+        id: `rv-${rv._id}`,
+        date: rv.scheduledDate,
+        kind: 'governance',
+        severity:
+          rv.status === 'Completed' ? 'success' :
+          rv.status === 'Missed' ? 'risk' : 'info',
+        title: `Tier 1 review · ${rv.status}`,
+        summary: rv.notes || '',
+        entityRef: { type: 'review', id: String(rv._id) },
+      });
+    });
+
+    if (project.darwinboxTagsPushedAt) {
+      events.push({
+        id: `proj-db-${projectId}`,
+        date: project.darwinboxTagsPushedAt,
+        kind: 'integration',
+        severity: 'info',
+        title: 'Darwinbox tags pushed',
+        summary: 'Project staffing synced to HRMS',
+        entityRef: { type: 'project', id: String(projectId) },
+      });
+    }
+
+    events.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    res.json({ projectId: String(projectId), events });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * GET /api/projects/:id/blockers
+ *
+ * Lists tasks in this project that are blocked by an open predecessor
+ * (dependsOnTaskIds entry whose status !== 'Done'). For each blocker we
+ * include the predecessor's project so cross-project blockers are obvious.
+ *
+ * Query params:
+ *   includeCompleted=true → also return tasks whose own status is Done
+ *     (audit / "what we waited for" view).
+ */
+const getProjectBlockers = async (req, res) => {
+  try {
+    const projectId = req.params.id;
+    if (!isValidId(projectId)) {
+      return res.status(400).json({ message: 'Invalid project id' });
+    }
+
+    if (!['admin', 'pmo', 'exec'].includes(req.user.role)) {
+      const access = await assertUserCanViewProject(req, projectId);
+      if (!access.ok) {
+        return res.status(access.status).json({ message: access.message });
+      }
+    }
+
+    const includeCompleted = String(req.query.includeCompleted || '').toLowerCase() === 'true';
+
+    const moduleIds = await Module.find({ projectId }).distinct('_id');
+    const wsIds = await Workstream.find({ moduleId: { $in: moduleIds } }).distinct('_id');
+
+    const ownTaskFilter = { workstreamId: { $in: wsIds } };
+    if (!includeCompleted) ownTaskFilter.status = { $ne: 'Done' };
+
+    const ownTasks = await Task.find({
+      ...ownTaskFilter,
+      dependsOnTaskIds: { $exists: true, $ne: [] },
+    })
+      .populate('assignedTo', 'name email')
+      .populate('workstreamId', 'name moduleId')
+      .lean();
+
+    if (!ownTasks.length) return res.json({ projectId: String(projectId), blockers: [] });
+
+    const allDepIds = [...new Set(
+      ownTasks.flatMap((t) => (t.dependsOnTaskIds || []).map((d) => String(d)))
+    )];
+
+    const depTasks = await Task.find({ _id: { $in: allDepIds } })
+      .populate('workstreamId', 'name moduleId')
+      .populate('assignedTo', 'name email')
+      .lean();
+    const depTasksById = new Map(depTasks.map((t) => [String(t._id), t]));
+
+    const depModuleIds = [...new Set(depTasks.map((t) => String(t.workstreamId?.moduleId)).filter(Boolean))];
+    const depModules = depModuleIds.length
+      ? await Module.find({ _id: { $in: depModuleIds } }).select('name projectId').lean()
+      : [];
+    const depModulesById = new Map(depModules.map((m) => [String(m._id), m]));
+
+    const depProjectIds = [...new Set(depModules.map((m) => String(m.projectId)).filter(Boolean))];
+    const depProjects = depProjectIds.length
+      ? await Project.find({ _id: { $in: depProjectIds } }).select('name clientName status').lean()
+      : [];
+    const depProjectsById = new Map(depProjects.map((p) => [String(p._id), p]));
+
+    const blockers = [];
+    ownTasks.forEach((t) => {
+      const openDeps = (t.dependsOnTaskIds || [])
+        .map((d) => depTasksById.get(String(d)))
+        .filter(Boolean)
+        .map((dep) => {
+          const depMod = depModulesById.get(String(dep.workstreamId?.moduleId));
+          const depProj = depMod ? depProjectsById.get(String(depMod.projectId)) : null;
+          const samePid =
+            depProj && String(depProj._id) === String(projectId);
+          return {
+            id: String(dep._id),
+            title: dep.title,
+            status: dep.status,
+            dueDate: dep.dueDate,
+            assignedTo: dep.assignedTo,
+            workstreamName: dep.workstreamId?.name || '',
+            moduleId: depMod?._id ? String(depMod._id) : null,
+            moduleName: depMod?.name || '',
+            projectId: depProj?._id ? String(depProj._id) : null,
+            projectName: depProj?.name || '',
+            isCrossProject: !samePid,
+          };
+        })
+        .filter((dep) => dep.status !== 'Done');
+      if (!openDeps.length) return;
+      blockers.push({
+        id: String(t._id),
+        title: t.title,
+        status: t.status,
+        dueDate: t.dueDate,
+        assignedTo: t.assignedTo,
+        workstreamId: t.workstreamId?._id ? String(t.workstreamId._id) : null,
+        workstreamName: t.workstreamId?.name || '',
+        moduleId: t.workstreamId?.moduleId ? String(t.workstreamId.moduleId) : null,
+        openDependencies: openDeps,
+      });
+    });
+
+    res.json({ projectId: String(projectId), blockers });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   getProjects,
   getMyProjects,
@@ -886,6 +1212,8 @@ module.exports = {
   updateProject,
   deleteProject,
   cloneProject,
+  getProjectKeyEvents,
+  getProjectBlockers,
   validateTierOneProjectPayload,
   validateSharePointIfPresent,
   assertEligibleDeliveryHead,

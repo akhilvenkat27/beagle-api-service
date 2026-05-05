@@ -46,6 +46,18 @@ const taskSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    /**
+     * Predecessor tasks. The current task is "blocked" while any
+     * dependsOnTaskIds entry has status !== 'Done'. A dependency may live
+     * in the same project OR a different project — UI surfaces both kinds.
+     */
+    dependsOnTaskIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Task',
+        index: true,
+      },
+    ],
     riskLevel: {
       type: String,
       enum: ['Normal', 'At Risk'],

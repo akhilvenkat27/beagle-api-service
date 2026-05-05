@@ -50,12 +50,51 @@ const getAllTasksVista = async (req, res) => {
       .limit(5000)
       .lean();
 
+    // Collect every task referenced as a dependency so we can surface blocker
+    // metadata (status, project) without a per-task round trip.
+    const allDepIds = [...new Set(
+      tasks.flatMap((t) => (t.dependsOnTaskIds || []).map((d) => String(d)))
+    )];
+    let depMap = new Map();
+    if (allDepIds.length) {
+      const depTasks = await Task.find({ _id: { $in: allDepIds } })
+        .select('title status workstreamId')
+        .populate({
+          path: 'workstreamId',
+          select: 'moduleId',
+          populate: {
+            path: 'moduleId',
+            select: 'projectId',
+            populate: { path: 'projectId', select: 'name' },
+          },
+        })
+        .lean();
+      depMap = new Map(
+        depTasks.map((d) => [
+          String(d._id),
+          {
+            id: String(d._id),
+            title: d.title,
+            status: d.status,
+            projectId: d.workstreamId?.moduleId?.projectId?._id
+              ? String(d.workstreamId.moduleId.projectId._id)
+              : null,
+            projectName: d.workstreamId?.moduleId?.projectId?.name || '',
+          },
+        ])
+      );
+    }
+
     const now = Date.now();
     let rows = tasks.map((t) => {
       const ws = t.workstreamId;
       const mod = ws && typeof ws === 'object' ? ws.moduleId : null;
       const proj = mod && typeof mod === 'object' ? mod.projectId : null;
-      const projectIdStr = proj && proj._id ? proj._id.toString() : null;
+      const ownProjId = proj && proj._id ? String(proj._id) : null;
+      const deps = (t.dependsOnTaskIds || [])
+        .map((d) => depMap.get(String(d)))
+        .filter(Boolean);
+      const openDeps = deps.filter((d) => d.status !== 'Done');
       return {
         _id: t._id,
         title: t.title,
@@ -77,6 +116,12 @@ const getAllTasksVista = async (req, res) => {
         isOverdue: t.status !== 'Done' && t.dueDate && new Date(t.dueDate).getTime() < now,
         riskLevel: t.riskLevel || 'Normal',
         workstreamBlocked: !!(ws && typeof ws === 'object' && ws.isBlocked),
+        dependsOnTaskIds: (t.dependsOnTaskIds || []).map((d) => String(d)),
+        openDependencies: openDeps,
+        hasOpenDependencies: openDeps.length > 0,
+        hasCrossProjectDependency: openDeps.some(
+          (d) => d.projectId && ownProjId && d.projectId !== ownProjId
+        ),
       };
     });
 
@@ -107,7 +152,15 @@ const getAllTasksVista = async (req, res) => {
     if (view === 'in_progress') rows = rows.filter((r) => r.status === 'In Progress');
     if (view === 'done') rows = rows.filter((r) => r.status === 'Done');
     if (view === 'blocked') {
-      rows = rows.filter((r) => r.riskLevel === 'At Risk' || r.workstreamBlocked);
+      rows = rows.filter(
+        (r) => r.riskLevel === 'At Risk' || r.workstreamBlocked || r.hasOpenDependencies
+      );
+    }
+    if (view === 'depblocked') {
+      rows = rows.filter((r) => r.hasOpenDependencies);
+    }
+    if (view === 'crossproject') {
+      rows = rows.filter((r) => r.hasCrossProjectDependency);
     }
     if (view === 'milestones') {
       const t = (s) => String(s || '').toLowerCase();

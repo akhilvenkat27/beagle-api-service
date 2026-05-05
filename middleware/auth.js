@@ -16,6 +16,7 @@ const auth = async (req, res, next) => {
     if (!token) {
       return res.status(401).json({
         success: false,
+        code: 'AUTH_TOKEN_MISSING',
         message: 'Not authorized to access this route',
       });
     }
@@ -27,6 +28,7 @@ const auth = async (req, res, next) => {
       if (!target) {
         return res.status(401).json({
           success: false,
+          code: 'AUTH_TOKEN_INVALID',
           message: 'Behave-as target user not found',
         });
       }
@@ -38,6 +40,7 @@ const auth = async (req, res, next) => {
       if (!user) {
         return res.status(401).json({
           success: false,
+          code: 'AUTH_TOKEN_INVALID',
           message: 'User not found',
         });
       }
@@ -55,7 +58,8 @@ const auth = async (req, res, next) => {
   } catch (error) {
     return res.status(401).json({
       success: false,
-      message: 'Not authorized to access this route',
+      code: 'AUTH_TOKEN_INVALID',
+      message: 'Invalid or expired session',
       error: error.message,
     });
   }

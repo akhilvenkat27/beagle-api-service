@@ -8,6 +8,7 @@ const {
   getMemberMyTasksWorkstreamIds,
   assertUserCanViewProject,
 } = require('./projectController');
+const { getPresetByKey, listPresets } = require('../services/taskPresets');
 
 const TASK_STATUSES = ['Not Started', 'In Progress', 'Done'];
 
@@ -242,6 +243,24 @@ const updateTask = async (req, res) => {
     const prevAssigned = task.assignedTo?.toString() || null;
     const prevStatus = task.status;
 
+    if (Array.isArray(updateData.dependsOnTaskIds)) {
+      const cleanedIds = [...new Set(
+        updateData.dependsOnTaskIds
+          .map((d) => String(d))
+          .filter((d) => d && mongoose.Types.ObjectId.isValid(d))
+      )];
+      const selfRef = cleanedIds.find((id) => id === String(task._id));
+      if (selfRef) {
+        return res.status(400).json({ message: 'A task cannot depend on itself' });
+      }
+      // Reject if any dependency does not exist.
+      const validCount = await Task.countDocuments({ _id: { $in: cleanedIds } });
+      if (validCount !== cleanedIds.length) {
+        return res.status(400).json({ message: 'One or more dependsOnTaskIds do not match existing tasks' });
+      }
+      updateData.dependsOnTaskIds = cleanedIds;
+    }
+
     const updatedTask = await Task.findByIdAndUpdate(req.params.id, updateData, {
       new: true,
       runValidators: true,
@@ -344,15 +363,21 @@ const bulkUpdateTasks = async (req, res) => {
       return res.status(400).json({ message: 'One or more task IDs were not found' });
     }
 
-    const projectIds = new Set();
+    // Map taskId → projectId so audits land on the correct project even when
+    // bulk operations span projects (only admin/pmo/dh are permitted to cross
+    // projects; PM is restricted via the route guard below).
+    const projectIdByTask = new Map();
     for (const t of tasks) {
       const pid = await getProjectIdForTaskDoc(t);
-      if (pid) projectIds.add(pid.toString());
+      projectIdByTask.set(String(t._id), pid ? String(pid) : null);
     }
-    if (projectIds.size > 1) {
-      return res.status(400).json({ message: 'All tasks must belong to the same project' });
+    const projectIds = new Set([...projectIdByTask.values()].filter(Boolean));
+    if (projectIds.size > 1 && !['admin', 'pmo', 'dh'].includes(req.user.role)) {
+      return res.status(400).json({
+        message: 'Only admin / PMO / DH can bulk-edit tasks across multiple projects',
+      });
     }
-    const projectId = projectIds.size ? [...projectIds][0] : null;
+    const projectId = projectIds.size === 1 ? [...projectIds][0] : null;
 
     const updated = [];
 
@@ -378,7 +403,7 @@ const bulkUpdateTasks = async (req, res) => {
           after: { assignedTo: next, title: t.title },
           actorId: req.user._id,
           actorName: req.user.name,
-          projectId,
+          projectId: projectId || projectIdByTask.get(String(t._id)) || null,
         });
       }
     } else if (operation === 'date-shift') {
@@ -404,7 +429,7 @@ const bulkUpdateTasks = async (req, res) => {
           after: { dueDate: newDue, days, title: t.title },
           actorId: req.user._id,
           actorName: req.user.name,
-          projectId,
+          projectId: projectId || projectIdByTask.get(String(t._id)) || null,
         });
       }
     } else if (operation === 'status') {
@@ -428,7 +453,7 @@ const bulkUpdateTasks = async (req, res) => {
           after: { status, title: t.title },
           actorId: req.user._id,
           actorName: req.user.name,
-          projectId,
+          projectId: projectId || projectIdByTask.get(String(t._id)) || null,
         });
       }
     } else {
@@ -456,6 +481,81 @@ const deleteTask = async (req, res) => {
   }
 };
 
+// GET /api/tasks/presets — built-in recurring task patterns
+const listTaskPresets = async (req, res) => {
+  try {
+    res.json({ presets: listPresets() });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/tasks/apply-preset — instantiate a preset under a workstream
+const applyTaskPreset = async (req, res) => {
+  try {
+    const { workstreamId, presetKey, anchorDate } = req.body || {};
+    if (!workstreamId || !mongoose.Types.ObjectId.isValid(workstreamId)) {
+      return res.status(400).json({ message: 'workstreamId is required' });
+    }
+    if (!presetKey) return res.status(400).json({ message: 'presetKey is required' });
+    const preset = getPresetByKey(presetKey);
+    if (!preset) return res.status(404).json({ message: 'Unknown preset' });
+
+    const authz = await assertCanCreateTaskInWorkstream(req, workstreamId);
+    if (!authz.ok) return res.status(403).json({ message: authz.message });
+
+    const gate = await assertModuleAllowsNewTasks(workstreamId);
+    if (!gate.ok) return res.status(400).json({ message: gate.message });
+
+    const ws = await Workstream.findById(workstreamId);
+    const anchorRaw =
+      anchorDate ||
+      ws?.actualStartDate ||
+      ws?.baselinePlannedStartDate ||
+      new Date().toISOString();
+    const anchor = new Date(anchorRaw);
+    if (Number.isNaN(anchor.getTime())) {
+      return res.status(400).json({ message: 'Invalid anchorDate' });
+    }
+
+    const created = [];
+    for (const tDef of preset.tasks) {
+      const offsetDays = Number.isFinite(tDef.offsetDays) ? Number(tDef.offsetDays) : 0;
+      const durationDays = Number.isFinite(tDef.durationDays) ? Number(tDef.durationDays) : 5;
+      const dueDate = new Date(anchor.getTime() + (offsetDays + durationDays) * 86400000);
+      const taskDoc = await Task.create({
+        title: tDef.title,
+        owner: tDef.owner || 'Project Manager',
+        status: 'Not Started',
+        dueDate,
+        workstreamId,
+        billable: tDef.billable !== false,
+      });
+      created.push(taskDoc);
+    }
+
+    const projectId = await getProjectIdForTaskDoc(created[0]);
+    await recordAudit({
+      entityType: 'Task',
+      entityId: created[0]?._id || null,
+      action: 'preset_applied',
+      before: null,
+      after: {
+        presetKey,
+        workstreamId: String(workstreamId),
+        taskCount: created.length,
+      },
+      actorId: req.user._id,
+      actorName: req.user.name,
+      projectId,
+    });
+
+    res.status(201).json({ created: created.length, tasks: created });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
 module.exports = {
   getMyTasks,
   getTasksByWorkstream,
@@ -464,4 +564,6 @@ module.exports = {
   logHours,
   bulkUpdateTasks,
   deleteTask,
+  listTaskPresets,
+  applyTaskPreset,
 };

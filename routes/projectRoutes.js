@@ -16,6 +16,8 @@ const {
   updateProject,
   deleteProject,
   cloneProject,
+  getProjectKeyEvents,
+  getProjectBlockers,
 } = require('../controllers/projectController');
 
 router.get(
@@ -32,6 +34,18 @@ router.get(
   auth,
   roleGuard('admin', 'pmo', 'dh', 'pm', 'exec', 'member', 'client'),
   getProjectById
+);
+router.get(
+  '/:id/key-events',
+  auth,
+  roleGuard('admin', 'pmo', 'dh', 'pm', 'exec', 'member', 'client'),
+  getProjectKeyEvents
+);
+router.get(
+  '/:id/blockers',
+  auth,
+  roleGuard('admin', 'pmo', 'dh', 'pm', 'exec', 'member'),
+  getProjectBlockers
 );
 router.post('/', auth, roleGuard('admin'), validateProjectCreate, createProject);
 router.put('/:id', auth, roleGuard('admin'), validateProjectUpdate, updateProject);

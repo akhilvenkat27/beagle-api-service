@@ -402,6 +402,13 @@ const validateTaskUpdate = (req, res, next) => {
   ) {
     errors.push('parentTaskId must be a valid Mongo ObjectId when provided');
   }
+  if ('dependsOnTaskIds' in b && b.dependsOnTaskIds != null) {
+    if (!Array.isArray(b.dependsOnTaskIds)) {
+      errors.push('dependsOnTaskIds must be an array of task ObjectIds');
+    } else if (b.dependsOnTaskIds.some((id) => !mongoose.Types.ObjectId.isValid(String(id)))) {
+      errors.push('every dependsOnTaskIds entry must be a valid Mongo ObjectId');
+    }
+  }
   if (errors.length) return sendErrors(res, errors);
   next();
 };

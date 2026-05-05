@@ -8,6 +8,7 @@ const roleGuard = (...allowedRoles) => {
     if (!req.user) {
       return res.status(401).json({
         success: false,
+        code: 'AUTH_TOKEN_INVALID',
         message: 'Not authenticated',
       });
     }

@@ -167,6 +167,15 @@ async function seed() {
       costRatePerHour: 4200,
     });
 
+    await User.create({
+      name: 'Darwinbox Admin',
+      email: 'admin@darwinbox.io',
+      password: DEMO_PASSWORD,
+      role: 'admin',
+      seniority: 'Lead',
+      costRatePerHour: 4200,
+    });
+
     /**
      * Demo accounts — one primary role per user; the API scopes data by role + project membership.
      * admin/pmo: org-wide portfolio; admin-only routes for users/costs/integration.
@@ -1101,6 +1110,7 @@ async function seed() {
     console.log('Demo password (all accounts):', DEMO_PASSWORD);
     console.log('Accounts:');
     console.log('  admin@udip.demo (admin)');
+    console.log('  admin@darwinbox.io (admin)');
     console.log('  pmo@udip.demo (pmo)');
     console.log('  dh@udip.demo (dh)');
     console.log('  pm@udip.demo (pm)');
