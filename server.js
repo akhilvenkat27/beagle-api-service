@@ -75,42 +75,53 @@ const { runTier1ReviewScheduler } = require('./services/reviewScheduler');
 const { runTaskDelayEscalation } = require('./services/taskDelayEscalationService');
 const { runScheduledReportsJob } = require('./controllers/reportController');
 
+function startBackgroundSchedulers() {
+  setTimeout(() => {
+    runTier1ReviewScheduler().catch((err) =>
+      console.error('[Governance] initial review scheduler:', err.message)
+    );
+    runTaskDelayEscalation().catch((err) =>
+      console.error('[TaskDelay] initial escalation scheduler:', err.message)
+    );
+    runScheduledReportsJob().catch((err) =>
+      console.error('[Reports] initial scheduled run failed:', err.message)
+    );
+  }, 5000);
+
+  setInterval(
+    () => {
+      runTier1ReviewScheduler().catch((err) =>
+        console.error('[Governance] daily review scheduler:', err.message)
+      );
+    },
+    24 * 60 * 60 * 1000
+  );
+  setInterval(
+    () => {
+      runScheduledReportsJob().catch((err) =>
+        console.error('[Reports] scheduled run failed:', err.message)
+      );
+    },
+    60 * 60 * 1000
+  );
+  setInterval(
+    () => {
+      runTaskDelayEscalation().catch((err) =>
+        console.error('[TaskDelay] escalation scheduler:', err.message)
+      );
+    },
+    24 * 60 * 60 * 1000
+  );
+}
+
 mongoose
   .connect(MONGO_URI)
-  .then(async () => {
+  .then(() => {
     console.log('MongoDB connected');
-    try {
-      await runTier1ReviewScheduler();
-      await runTaskDelayEscalation();
-      await runScheduledReportsJob();
-    } catch (e) {
-      console.error('[Schedulers] initial run:', e.message);
-    }
-    setInterval(
-      () => {
-        runTier1ReviewScheduler().catch((err) =>
-          console.error('[Governance] daily review scheduler:', err.message)
-        );
-      },
-      24 * 60 * 60 * 1000
-    );
-    setInterval(
-      () => {
-        runScheduledReportsJob().catch((err) =>
-          console.error('[Reports] scheduled run failed:', err.message)
-        );
-      },
-      60 * 60 * 1000
-    );
-    setInterval(
-      () => {
-        runTaskDelayEscalation().catch((err) =>
-          console.error('[TaskDelay] escalation scheduler:', err.message)
-        );
-      },
-      24 * 60 * 60 * 1000
-    );
-    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      startBackgroundSchedulers();
+    });
   })
   .catch((err) => {
     console.error('MongoDB connection error:', err.message);
